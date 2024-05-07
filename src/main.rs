@@ -1,13 +1,16 @@
-use crate::client::Client;
+use crate::{client::Client, simulator::Simulator};
 use clap::Parser;
 use crossterm::terminal::Clear;
-use sqlx::sqlite::SqliteConnectOptions;
-use std::str::FromStr;
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite;
+use std::{str::FromStr, thread::JoinHandle};
 
 mod client;
+mod migrations;
+mod models;
 mod netcode;
 mod server;
-pub mod models;
+mod simulator;
 
 use server::gateway::Gateway;
 
@@ -27,47 +30,38 @@ struct Args {
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let mut server_thread = None;
+    let mut simulator_thread: Option<JoinHandle<()>> = None;
     let mut client_thread = None;
     if let Some(host_addr) = args.host {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
+        let manager = SqliteConnectionManager::file(&format!(
+            "{}/.dungeon/{}.sqlite",
+            std::env::var("HOME").unwrap(),
+            args.game
+        ));
+        let pool = r2d2::Pool::new(manager).unwrap();
+        migrations::apply_migrations(&pool);
 
-        let db = runtime.block_on(async {
-            let db = sqlx::SqlitePool::connect_with(
-                SqliteConnectOptions::new()
-                    .filename(&format!(
-                        "{}/.dungeon/{}.sqlite",
-                        std::env::var("HOME").unwrap(),
-                        args.game
-                    ))
-                    .create_if_missing(true),
-            )
-            .await
-            .unwrap();
-            sqlx::migrate!("./migrations").run(&db).await.unwrap();
-            db
-        });
-        println!("Starting server");
         server_thread = Some(Gateway::start(
             args.game,
             std::net::SocketAddr::from_str(&host_addr).unwrap(),
-            db.clone(),
+            pool.clone(),
         ));
+        simulator_thread = Some(Simulator::start(pool.clone()));
     }
     if let Some(connect_addr) = args.connect {
         println!("Connecting to server");
         client_thread = Some(Client::join(
             std::net::SocketAddr::from_str(&connect_addr).unwrap(),
-            args.player.unwrap()
+            args.player.unwrap(),
         ));
     }
 
     if let Some(st) = server_thread {
         st.join().unwrap();
     }
-
+    if let Some(st) = simulator_thread {
+        st.join().unwrap();
+    }
     if let Some(st) = client_thread {
         st.join().unwrap();
     }
