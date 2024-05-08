@@ -2,7 +2,7 @@ use std::thread::JoinHandle;
 
 use r2d2_sqlite::SqliteConnectionManager;
 
-use crate::models::pending_commands::{ClientCommand, PendingCommands};
+use crate::models::pending_commands::{Action, ClientCommand};
 
 pub struct Simulator {}
 
@@ -13,9 +13,9 @@ impl Simulator {
             let mut db = pool.get().unwrap();
             let mut trans = db.transaction().unwrap();
             let commands = trans
-                .prepare("DELETE FROM pending_commands RETURNING *")
+                .prepare("SELECT * FROM pending_actions")
                 .unwrap()
-                .query_map([], PendingCommands::from_row)
+                .query_map([], Action::from_row)
                 .unwrap()
                 .flatten()
                 .collect::<Vec<_>>();
@@ -23,20 +23,13 @@ impl Simulator {
                 .execute("UPDATE epoch SET current_tick = current_tick + 1", [])
                 .unwrap();
             for command in commands.into_iter() {
-                for com in &command.commands {
-                    Self::apply_commmand(command.entity_id, com, &mut trans);
-                }
+                Self::apply_commmand(command.entity_id, &command.command, &mut trans);
                 trans
-                    .prepare("INSERT INTO pending_commands VALUES($1, $2, $3)")
+                    .prepare("INSERT INTO actions_removed SELECT $1, COALESCE(MAX(action_removed_id)+1, 1), $2 FROM actions_removed WHERE entity_id=$1")
                     .unwrap()
                     .execute((
                         command.entity_id,
-                        if command.commands.len() > 0 {
-                            command.command_id + 1
-                        } else {
-                            command.command_id
-                        },
-                        bincode::serialize::<Vec<ClientCommand>>(&vec![]).unwrap(),
+                        command.action_id
                     ))
                     .unwrap();
             }

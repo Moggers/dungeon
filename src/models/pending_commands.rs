@@ -22,18 +22,33 @@ impl ClientCommand {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct PendingCommands {
+pub struct Action {
     pub entity_id: i64,
-    pub command_id: i64,
-    pub commands: Vec<ClientCommand>,
+    pub action_id: i64,
+    pub command: ClientCommand,
 }
-
-impl PendingCommands {
+impl Action {
     pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
         Ok(Self {
             entity_id: r.get(0)?,
-            command_id: r.get(1)?,
-            commands: bincode::deserialize(&r.get::<_, Vec<u8>>(2)?).unwrap(),
+            action_id: r.get(1)?,
+            command: bincode::deserialize(&r.get::<_, Vec<u8>>(2)?).unwrap(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActionRemoved {
+    pub entity_id: i64,
+    pub action_removed_id: i64,
+    pub action_id: i64,
+}
+impl ActionRemoved {
+    pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            entity_id: r.get(0)?,
+            action_removed_id: r.get(1)?,
+            action_id: r.get(2)?,
         })
     }
 }

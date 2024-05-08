@@ -46,7 +46,8 @@ impl Connection {
                             let worldstate = Packet::WorldState(world_state::WorldState::generate(
                                 heartbeat.timestamp,
                                 heartbeat.last_message_id,
-                                heartbeat.last_command_id,
+                                heartbeat.last_action_created_id,
+                                heartbeat.last_action_removed_id,
                                 entity_id,
                                 &mut db,
                             ));
@@ -58,7 +59,15 @@ impl Connection {
                         if let Some(entity_id) = client_entity_id {
                             let mut queued_commands = vec![];
                             for c in commands.commands.into_iter() {
-                                match c {
+                                db.prepare("INSERT INTO actions_created VALUES ($1, $2, $3)")
+                                    .unwrap()
+                                    .execute((
+                                        c.entity_id,
+                                        c.action_id,
+                                        bincode::serialize(&c.command).unwrap(),
+                                    ))
+                                    .unwrap();
+                                match c.command {
                                     ClientCommand::TypedCommand(com)
                                         if com
                                             .command
@@ -69,24 +78,13 @@ impl Connection {
                                     {
                                         let (_, message) = com.command.split_once(" ").unwrap();
                                         db.prepare("INSERT INTO messages (source_entity_id, message) VALUES ($1, $2)").unwrap().execute((entity_id, message)).unwrap();
+                                        db.prepare("INSERT INTO actions_removed (entity_id, action_removed_id, action_id) SELECT $1, COALESCE(MAX(action_removed_id)+1, 1), $2 FROM actions_removed ar WHERE ar.entity_id=$1").unwrap().execute((entity_id, c.action_id)).unwrap();
                                     }
                                     c => {
                                         queued_commands.push(c);
                                     }
                                 }
                             }
-                            db.prepare("DELETE FROM pending_commands WHERE entity_id=$1")
-                                .unwrap()
-                                .execute([entity_id])
-                                .unwrap();
-                            db.prepare("INSERT INTO pending_commands VALUES ($1, $2, $3)")
-                                .unwrap()
-                                .execute((
-                                    entity_id,
-                                    commands.command_id,
-                                    bincode::serialize(&queued_commands).unwrap(),
-                                ))
-                                .unwrap();
                         }
                     }
                     _ => {

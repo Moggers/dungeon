@@ -1,6 +1,5 @@
-use crate::models::pending_commands::ClientCommand;
+use crate::models::pending_commands::{Action, ClientCommand};
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClientCommands {
-    pub command_id: i64,
-    pub commands: Vec<ClientCommand>,
+    pub commands: Vec<Action>,
 }

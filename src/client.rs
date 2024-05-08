@@ -9,7 +9,7 @@ use crossterm::terminal::{
 };
 use itertools::Itertools;
 
-use crate::models::pending_commands::{ClientCommand, MoveCommand, TypedCommand};
+use crate::models::pending_commands::{Action, ClientCommand, MoveCommand, TypedCommand};
 use crate::models::rooms::RoomTileType;
 use crate::netcode::client_commands::ClientCommands;
 use crate::netcode::heartbeat::Heartbeat;
@@ -38,15 +38,16 @@ impl Client {
             let mut last_timestamp = 0;
             let mut entering_command = false;
             let mut current_command = String::new();
-            let mut last_sent_command_id = 0;
-            let mut last_received_command_id = 0;
             let mut redraw_messages = false;
             let mut last_heartbeat = std::time::SystemTime::now();
             let mut redraw_world = false;
             let mut last_message_id = 0;
             let mut current_room = String::new();
             let mut send_commands = false;
-            let mut pending_commands = vec![];
+            let mut pending_commands: Vec<Action> = vec![];
+            let mut last_received_action_removed_id: i64 = 0;
+            let mut highest_local_action: i64 = 0;
+            let mut last_received_action_created_id: i64 = 0;
             let mut current_entity_id = 0;
             let mut tiles = std::collections::HashMap::<(i16, i16), (RoomTileType, bool)>::new();
             execute!(stdout, Clear(ClearType::All)).unwrap();
@@ -85,9 +86,14 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_commands.push(ClientCommand::TypedCommand(TypedCommand {
-                                command: current_command.clone(),
-                            }));
+                            highest_local_action = highest_local_action + 1;
+                            pending_commands.push(Action {
+                                entity_id: current_entity_id,
+                                action_id: highest_local_action,
+                                command: ClientCommand::TypedCommand(TypedCommand {
+                                    command: current_command.clone(),
+                                }),
+                            });
                             entering_command = false;
                             send_commands = true;
                         }
@@ -107,8 +113,12 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_commands
-                                .push(ClientCommand::MoveCommand(MoveCommand { x: 1, y: 0 }));
+                            highest_local_action = highest_local_action + 1;
+                            pending_commands.push(Action {
+                                entity_id: current_entity_id,
+                                action_id: highest_local_action,
+                                command: ClientCommand::MoveCommand(MoveCommand { x: 1, y: 0 }),
+                            });
                             redraw_world = true;
                             send_commands = true;
                         }
@@ -119,8 +129,12 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_commands
-                                .push(ClientCommand::MoveCommand(MoveCommand { x: 0, y: -1 }));
+                            highest_local_action = highest_local_action + 1;
+                            pending_commands.push(Action {
+                                entity_id: current_entity_id,
+                                action_id: highest_local_action,
+                                command: ClientCommand::MoveCommand(MoveCommand { x: 0, y: -1 }),
+                            });
                             send_commands = true;
                             redraw_world = true;
                         }
@@ -131,8 +145,12 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_commands
-                                .push(ClientCommand::MoveCommand(MoveCommand { x: 0, y: 1 }));
+                            highest_local_action = highest_local_action + 1;
+                            pending_commands.push(Action {
+                                entity_id: current_entity_id,
+                                action_id: highest_local_action,
+                                command: ClientCommand::MoveCommand(MoveCommand { x: 0, y: 1 }),
+                            });
                             send_commands = true;
                             redraw_world = true;
                         }
@@ -143,8 +161,12 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_commands
-                                .push(ClientCommand::MoveCommand(MoveCommand { x: -1, y: 0 }));
+                            highest_local_action = highest_local_action + 1;
+                            pending_commands.push(Action {
+                                entity_id: current_entity_id,
+                                action_id: highest_local_action,
+                                command: ClientCommand::MoveCommand(MoveCommand { x: -1, y: 0 }),
+                            });
                             send_commands = true;
                             redraw_world = true;
                         }
@@ -163,10 +185,12 @@ impl Client {
                     }
                 }
                 if send_commands == true {
-                    last_sent_command_id = last_sent_command_id + 1;
                     let packet = Packet::ClientCommands(ClientCommands {
-                        command_id: last_sent_command_id,
-                        commands: pending_commands.clone(),
+                        commands: pending_commands
+                            .iter()
+                            .filter(|a| a.action_id > last_received_action_created_id)
+                            .map(|a| a.to_owned())
+                            .collect(),
                     });
                     stream.write(&bincode::serialize(&packet).unwrap()).unwrap();
                     send_commands = false;
@@ -178,7 +202,8 @@ impl Client {
                 } {
                     let packet = Packet::Heartbeat(Heartbeat {
                         last_message_id,
-                        last_command_id: last_received_command_id,
+                        last_action_removed_id: last_received_action_removed_id,
+                        last_action_created_id: last_received_action_created_id,
                         timestamp: last_timestamp,
                     });
                     stream.write(&bincode::serialize(&packet).unwrap()).unwrap();
@@ -202,11 +227,14 @@ impl Client {
                                     last_message_id = world_state.last_message_id;
                                     redraw_messages = true;
                                 }
-                                if world_state.client_commands.command_id >= last_sent_command_id {
-                                    last_sent_command_id = last_received_command_id;
-                                    pending_commands = world_state.client_commands.commands;
+                                last_received_action_created_id = world_state.highest_action_created_id;
+                                last_received_action_removed_id = world_state.highest_action_removed_id;
+                                if last_received_action_created_id > highest_local_action {
+                                    highest_local_action = last_received_action_created_id;
                                 }
-                                last_received_command_id = world_state.client_commands.command_id;
+                                pending_commands.retain(|a| {
+                                    !world_state.actions_removed.iter().map(|r| r.action_id).contains(&a.action_id)
+                                })
                             }
                             Packet::IdentifyResp(idr) => current_entity_id = idr.entity_id,
                             Packet::CurrentRoom(cr) => {
@@ -321,7 +349,7 @@ impl Client {
                         if *entity_id == current_entity_id {
                             let mut arrow_x = *x as u16;
                             let mut arrow_y = *y as u16;
-                            for pending_move in pending_commands.iter().filter_map(|c| match c {
+                            for pending_move in pending_commands.iter().filter_map(|c| match &c.command {
                                 ClientCommand::MoveCommand(m) => Some(m),
                                 _ => None,
                             }) {

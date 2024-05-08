@@ -55,12 +55,22 @@ pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
                 FROM epoch
                 WHERE entity_id=NEW.entity_id;
             END;
-            CREATE TABLE pending_commands (
+
+            CREATE TABLE actions_created (
                 entity_id INTEGER NOT NULL,
-                pending_command_id INTEGER NOT NULL,
-                command BLOB NOT NULL,
-                FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
+                action_id INTEGER NOT NULL,
+                command BLOB NOT NULL
             );
+            CREATE TABLE actions_removed (
+                entity_id INTEGER NOT NULL,
+                action_removed_id INTEGER NOT NULL,
+                action_id INTEGER NOT NULL
+            );
+            CREATE VIEW pending_actions AS
+            SELECT ac.* FROM actions_created ac
+            LEFT OUTER JOIN actions_removed ar ON ac.action_id=ar.action_id AND ar.entity_id=ac.entity_id
+            WHERE ar.action_removed_id IS NULL;
+
             CREATE TABLE epoch (
                 current_tick INTEGER NOT NULL DEFAULT 0
             );

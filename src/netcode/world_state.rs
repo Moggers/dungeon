@@ -1,4 +1,8 @@
-use crate::models::{pending_commands::PendingCommands, position::Position};
+use crate::models::{
+    pending_commands::{Action, ActionRemoved},
+    position::Position,
+};
+use itertools::{max, Itertools};
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OptionalExtension, Row};
@@ -29,14 +33,18 @@ pub struct WorldState {
     pub entity_positions: HashMap<i64, (i64, i64)>,
     pub last_message_id: i64,
     pub messages: Vec<Message>,
-    pub client_commands: PendingCommands,
+    pub actions_created: Vec<Action>,
+    pub highest_action_created_id: i64,
+    pub actions_removed: Vec<ActionRemoved>,
+    pub highest_action_removed_id: i64,
 }
 
 impl WorldState {
     pub fn generate(
         timestamp: i64,
         last_message_id: i64,
-        last_client_command: i64,
+        last_action_created_id: i64,
+        last_action_removed_id: i64,
         entity_id: i64,
         db: &mut PooledConnection<SqliteConnectionManager>,
     ) -> WorldState {
@@ -51,33 +59,17 @@ impl WorldState {
         let current_tick: i64 = db
             .query_row("SELECT current_tick FROM epoch", [], |r| Ok(r.get(0)?))
             .unwrap();
-        let client_commands = db
-            .query_row(
-                "SELECT * FROM pending_commands WHERE entity_id=$1",
-                [entity_id],
-                PendingCommands::from_row,
-            )
-            .optional()
-            .unwrap();
+        let actions_created = db
+            .prepare("SELECT * FROM actions_created WHERE entity_id=$1 AND action_id > $2")
+            .unwrap()
+            .query_map([entity_id, last_action_created_id], Action::from_row).unwrap().flatten().collect_vec();
+        let actions_removed = db
+            .prepare("SELECT * FROM actions_removed WHERE entity_id=$1 AND action_removed_id > $2")
+            .unwrap()
+            .query_map([entity_id, last_action_removed_id], ActionRemoved::from_row).unwrap().flatten().collect_vec();
 
         return Self {
             timestamp: current_tick,
-            client_commands: match client_commands {
-                None => PendingCommands {
-                    entity_id,
-                    command_id: 0,
-                    commands: vec![],
-                },
-                Some(c) => PendingCommands {
-                    entity_id,
-                    command_id: c.command_id,
-                    commands: if c.command_id >= last_client_command {
-                        c.commands
-                    } else {
-                        vec![]
-                    },
-                },
-            },
             entity_positions: positions
                 .into_iter()
                 .fold(HashMap::new(), |mut carry, cur| {
@@ -86,6 +78,10 @@ impl WorldState {
                 }),
             last_message_id: messages.iter().last().map(|m| m.message_id).unwrap_or(0),
             messages: messages.into_iter().collect(),
+            highest_action_created_id: std::cmp::max(last_action_created_id, actions_created.iter().map(|a| a.action_id).max().unwrap_or(0)),
+            highest_action_removed_id: std::cmp::max(last_action_removed_id, actions_removed.iter().map(|a| a.action_id).max().unwrap_or(0)),
+            actions_created,
+            actions_removed,
         };
     }
 }
