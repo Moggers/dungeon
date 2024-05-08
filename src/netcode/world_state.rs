@@ -1,8 +1,10 @@
-use crate::models::position::Position;
+use crate::models::{pending_commands::PendingCommands, position::Position};
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::Row;
+use rusqlite::{OptionalExtension, Row};
 use std::collections::HashMap;
+
+use super::client_commands::ClientCommands;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Message {
@@ -27,12 +29,14 @@ pub struct WorldState {
     pub entity_positions: HashMap<i64, (i64, i64)>,
     pub last_message_id: i64,
     pub messages: Vec<Message>,
+    pub client_commands: PendingCommands,
 }
 
 impl WorldState {
     pub fn generate(
         timestamp: i64,
         last_message_id: i64,
+        last_client_command: i64,
         entity_id: i64,
         db: &mut PooledConnection<SqliteConnectionManager>,
     ) -> WorldState {
@@ -47,9 +51,33 @@ impl WorldState {
         let current_tick: i64 = db
             .query_row("SELECT current_tick FROM epoch", [], |r| Ok(r.get(0)?))
             .unwrap();
+        let client_commands = db
+            .query_row(
+                "SELECT * FROM pending_commands WHERE entity_id=$1",
+                [entity_id],
+                PendingCommands::from_row,
+            )
+            .optional()
+            .unwrap();
 
         return Self {
             timestamp: current_tick,
+            client_commands: match client_commands {
+                None => PendingCommands {
+                    entity_id,
+                    command_id: 0,
+                    commands: vec![],
+                },
+                Some(c) => PendingCommands {
+                    entity_id,
+                    command_id: c.command_id,
+                    commands: if c.command_id >= last_client_command {
+                        c.commands
+                    } else {
+                        vec![]
+                    },
+                },
+            },
             entity_positions: positions
                 .into_iter()
                 .fold(HashMap::new(), |mut carry, cur| {

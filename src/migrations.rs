@@ -3,9 +3,8 @@ use rusqlite_migration::M;
 
 pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
     let mut db = pool.get().unwrap();
-    let migrations = rusqlite_migration::Migrations::new(vec![
-        M::up(
-            r#"
+    let migrations = rusqlite_migration::Migrations::new(vec![M::up(
+        r#"
             CREATE TABLE entities (entity_id INTEGER PRIMARY KEY AUTOINCREMENT);
 
             CREATE TABLE characters (
@@ -13,11 +12,7 @@ pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
               name TEXT NOT NULL UNIQUE,
               
               FOREIGN KEY(entity_id) REFERENCES entities(entity_id)
-            );"#,
-        )
-        .down(r#" DROP TABLE characters; DROP TABLE entities;"#),
-        M::up(
-            r#"
+            );
             CREATE TABLE messages (
                 message_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 recipient_entity_id INTEGER,
@@ -34,43 +29,7 @@ pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
                 UPDATE messages SET created_at = epoch.current_tick 
                 FROM epoch
                 WHERE message_id=NEW.message_id;
-            END;"#,
-        )
-        .down(r#" DROP TABLE messages;"#),
-        M::up(
-            r#"
-            CREATE TABLE positions (
-                entity_id INTEGER PRIMARY KEY,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                last_updated INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
-            );
-
-            CREATE TRIGGER IF NOT EXISTS position_updated_at AFTER UPDATE ON positions 
-                BEGIN
-                UPDATE positions SET last_updated = epoch.current_tick 
-                FROM epoch
-                WHERE entity_id=NEW.entity_id;
             END;
-            "#,
-        )
-        .down(r#"DROP TABLE positions;"#),
-        M::up(
-            r#"
-            CREATE TABLE pending_commands (
-                entity_id INTEGER NOT NULL,
-                command BLOB NOT NULL,
-                FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
-            );
-            CREATE TABLE epoch (
-                current_tick INTEGER NOT NULL DEFAULT 0
-            );
-            INSERT INTO epoch VALUES (0);"#,
-        )
-        .down(r#"DROP TABLE pending_commands; DROP TABLE epoch;"#),
-        M::up(
-            r#"
             CREATE TABLE rooms (
                 room_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT
@@ -79,12 +38,45 @@ pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
                 room_id,
                 x INTEGER,
                 y INTEGER,
-                tile_type INTEGER 
+                tile_type INTEGER,
+                passable INTEGER
             );
-            ALTER TABLE positions ADD COLUMN room_id INTEGER REFERENCES rooms(room_id);
+            CREATE TABLE positions (
+                entity_id INTEGER PRIMARY KEY,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                last_updated INTEGER NOT NULL DEFAULT 0,
+                room_id INTEGER NOT NULL references rooms(room_id),
+                FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
+            );
+            CREATE TRIGGER IF NOT EXISTS position_updated_at AFTER UPDATE ON positions 
+                BEGIN
+                UPDATE positions SET last_updated = epoch.current_tick 
+                FROM epoch
+                WHERE entity_id=NEW.entity_id;
+            END;
+            CREATE TABLE pending_commands (
+                entity_id INTEGER NOT NULL,
+                pending_command_id INTEGER NOT NULL,
+                command BLOB NOT NULL,
+                FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
+            );
+            CREATE TABLE epoch (
+                current_tick INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO epoch VALUES (0);
             "#,
-        )
-        .down("DROP TABLE room_tiles; DROP TABLE rooms;"),
-    ]);
+    )
+    .down(
+        r#" 
+            DROP TABLE room_tiles; DROP TABLE rooms;
+            DROP TABLE pending_commands; 
+            DROP TABLE epoch;
+            DROP TABLE positions;
+            DROP TABLE messages;
+            DROP TABLE characters; 
+            DROP TABLE entities;
+        "#,
+    )]);
     migrations.to_latest(&mut *db).unwrap();
 }

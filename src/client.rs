@@ -1,4 +1,4 @@
-use colored::{Color, Colorize};
+use colored::Colorize;
 use crossterm::cursor::MoveTo;
 use crossterm::event::{poll, read, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -8,16 +8,13 @@ use crossterm::terminal::{
     EndSynchronizedUpdate,
 };
 use itertools::Itertools;
-use rusqlite::types::Type;
-use unicode_segmentation::UnicodeSegmentation;
 
-use crate::models::rooms::{Room, RoomTileType};
-use crate::netcode::client_commands::{ClientCommand, MoveCommand, TypedCommand};
+use crate::models::pending_commands::{ClientCommand, MoveCommand, TypedCommand};
+use crate::models::rooms::RoomTileType;
+use crate::netcode::client_commands::ClientCommands;
+use crate::netcode::heartbeat::Heartbeat;
 use crate::netcode::{identify::Identify, Packet};
-use std::hash::Hash;
-use std::io::{Read, Write};
-use std::process::id;
-use std::thread::current;
+use std::io::Write;
 use std::{net::SocketAddr, thread::JoinHandle};
 
 pub struct Client {}
@@ -41,18 +38,20 @@ impl Client {
             let mut last_timestamp = 0;
             let mut entering_command = false;
             let mut current_command = String::new();
+            let mut last_sent_command_id = 0;
+            let mut last_received_command_id = 0;
             let mut redraw_messages = false;
             let mut last_heartbeat = std::time::SystemTime::now();
             let mut redraw_world = false;
             let mut last_message_id = 0;
             let mut current_room = String::new();
-            let mut pending_move: Option<ClientCommand> = None;
+            let mut send_commands = false;
+            let mut pending_commands = vec![];
             let mut current_entity_id = 0;
-            let mut tiles = std::collections::HashMap::<(i16, i16), RoomTileType>::new();
+            let mut tiles = std::collections::HashMap::<(i16, i16), (RoomTileType, bool)>::new();
             execute!(stdout, Clear(ClearType::All)).unwrap();
             'app_loop: loop {
                 // Get inputs
-                let mut commands = vec![];
                 while let true = poll(std::time::Duration::from_millis(0)).unwrap() {
                     match (entering_command, read().unwrap()) {
                         (_, crossterm::event::Event::Resize(_, _)) => {
@@ -86,10 +85,11 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            commands.push(ClientCommand::TypedCommand(TypedCommand {
+                            pending_commands.push(ClientCommand::TypedCommand(TypedCommand {
                                 command: current_command.clone(),
                             }));
                             entering_command = false;
+                            send_commands = true;
                         }
                         (
                             true,
@@ -107,11 +107,10 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_move = Some(ClientCommand::MoveCommand(
-                                crate::netcode::client_commands::MoveCommand { x: 1, y: 0 },
-                            ));
-                            commands.push(pending_move.clone().unwrap());
+                            pending_commands
+                                .push(ClientCommand::MoveCommand(MoveCommand { x: 1, y: 0 }));
                             redraw_world = true;
+                            send_commands = true;
                         }
                         (
                             false,
@@ -120,10 +119,9 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_move = Some(ClientCommand::MoveCommand(
-                                crate::netcode::client_commands::MoveCommand { x: 0, y: -1 },
-                            ));
-                            commands.push(pending_move.clone().unwrap());
+                            pending_commands
+                                .push(ClientCommand::MoveCommand(MoveCommand { x: 0, y: -1 }));
+                            send_commands = true;
                             redraw_world = true;
                         }
                         (
@@ -133,10 +131,9 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_move = Some(ClientCommand::MoveCommand(
-                                crate::netcode::client_commands::MoveCommand { x: 0, y: 1 },
-                            ));
-                            commands.push(pending_move.clone().unwrap());
+                            pending_commands
+                                .push(ClientCommand::MoveCommand(MoveCommand { x: 0, y: 1 }));
+                            send_commands = true;
                             redraw_world = true;
                         }
                         (
@@ -146,10 +143,9 @@ impl Client {
                                 ..
                             }),
                         ) => {
-                            pending_move = Some(ClientCommand::MoveCommand(
-                                crate::netcode::client_commands::MoveCommand { x: -1, y: 0 },
-                            ));
-                            commands.push(pending_move.clone().unwrap());
+                            pending_commands
+                                .push(ClientCommand::MoveCommand(MoveCommand { x: -1, y: 0 }));
+                            send_commands = true;
                             redraw_world = true;
                         }
                         (
@@ -166,19 +162,25 @@ impl Client {
                         _ => {}
                     }
                 }
-                if commands.len() > 0
-                    || std::time::SystemTime::now()
+                if send_commands == true {
+                    last_sent_command_id = last_sent_command_id + 1;
+                    let packet = Packet::ClientCommands(ClientCommands {
+                        command_id: last_sent_command_id,
+                        commands: pending_commands.clone(),
+                    });
+                    stream.write(&bincode::serialize(&packet).unwrap()).unwrap();
+                    send_commands = false;
+                } else if {
+                    std::time::SystemTime::now()
                         .duration_since(last_heartbeat)
                         .unwrap()
                         > std::time::Duration::from_millis(50)
-                {
-                    // Do netcode stuff
-                    let packet =
-                        Packet::ClientCommands(crate::netcode::client_commands::ClientCommands {
-                            commands,
-                            last_message_id,
-                            timestamp: last_timestamp,
-                        });
+                } {
+                    let packet = Packet::Heartbeat(Heartbeat {
+                        last_message_id,
+                        last_command_id: last_received_command_id,
+                        timestamp: last_timestamp,
+                    });
                     stream.write(&bincode::serialize(&packet).unwrap()).unwrap();
                 }
                 {
@@ -192,17 +194,19 @@ impl Client {
                                     world_state.entity_positions.into_iter()
                                 {
                                     entity_positions.insert(entity_id, position);
-                                    if entity_id == current_entity_id {
-                                        pending_move = None;
-                                    }
                                 }
                                 if world_state.messages.len() > 0 {
                                     for m in world_state.messages {
                                         messages.insert(m.message_id, m);
                                     }
-                                    redraw_messages = true;
                                     last_message_id = world_state.last_message_id;
+                                    redraw_messages = true;
                                 }
+                                if world_state.client_commands.command_id >= last_sent_command_id {
+                                    last_sent_command_id = last_received_command_id;
+                                    pending_commands = world_state.client_commands.commands;
+                                }
+                                last_received_command_id = world_state.client_commands.command_id;
                             }
                             Packet::IdentifyResp(idr) => current_entity_id = idr.entity_id,
                             Packet::CurrentRoom(cr) => {
@@ -210,7 +214,10 @@ impl Client {
                                 tiles = cr.tiles.into_iter().fold(
                                     std::collections::HashMap::new(),
                                     |mut h, t| {
-                                        h.insert((t.x as i16, t.y as i16), t.tile_type);
+                                        h.insert(
+                                            (t.x as i16, t.y as i16),
+                                            (t.tile_type, t.passable),
+                                        );
                                         h
                                     },
                                 );
@@ -237,22 +244,22 @@ impl Client {
                         execute!(
                             stdout,
                             MoveTo(*x as u16, *y as u16),
-                            Print(match tile {
+                            Print(match tile.0 {
                                 RoomTileType::Floor => "+".truecolor(125, 125, 125),
                                 RoomTileType::Wall => {
                                     match (
                                         tiles
                                             .get(&(*x, *y - 1))
-                                            .filter(|t| **t == RoomTileType::Wall), // North
+                                            .filter(|t| t.0 == RoomTileType::Wall), // North
                                         tiles
                                             .get(&(*x + 1, *y))
-                                            .filter(|t| **t == RoomTileType::Wall), // East
+                                            .filter(|t| t.0 == RoomTileType::Wall), // East
                                         tiles
                                             .get(&(*x, *y + 1))
-                                            .filter(|t| **t == RoomTileType::Wall), // South
+                                            .filter(|t| t.0 == RoomTileType::Wall), // South
                                         tiles
                                             .get(&(*x - 1, *y))
-                                            .filter(|t| **t == RoomTileType::Wall), // West
+                                            .filter(|t| t.0 == RoomTileType::Wall), // West
                                     ) {
                                         (Some(_), Some(_), Some(_), Some(_)) => {
                                             "╬".truecolor(180, 100, 80)
@@ -281,25 +288,17 @@ impl Client {
                                         }
                                         (Some(_), None, None, Some(_)) => {
                                             "╝".truecolor(180, 100, 80)
-                                        },
+                                        }
                                         (Some(_), None, Some(_), None) => {
                                             "║".truecolor(180, 100, 80)
-                                        },
+                                        }
                                         (None, Some(_), None, Some(_)) => {
                                             "═".truecolor(180, 100, 80)
-                                        },
-                                        (Some(_), None, None, None) => {
-                                            "╨".truecolor(180, 100, 80)
-                                        },
-                                        (None, Some(_), None, None) => {
-                                            "╘".truecolor(180, 100, 80)
-                                        },
-                                        (None, None, Some(_), None) => {
-                                            "╓".truecolor(180, 100, 80)
-                                        },
-                                        (None, None, None, Some(_)) => {
-                                            "╕".truecolor(180, 100, 80)
-                                        },
+                                        }
+                                        (Some(_), None, None, None) => "╨".truecolor(180, 100, 80),
+                                        (None, Some(_), None, None) => "╘".truecolor(180, 100, 80),
+                                        (None, None, Some(_), None) => "╓".truecolor(180, 100, 80),
+                                        (None, None, None, Some(_)) => "╕".truecolor(180, 100, 80),
                                     }
                                 }
                             })
@@ -320,24 +319,35 @@ impl Client {
                             .unwrap();
                         }
                         if *entity_id == current_entity_id {
-                            match pending_move {
-                                Some(ClientCommand::MoveCommand(MoveCommand { x: -1, y: 0 })) => {
-                                    execute!(stdout, MoveTo(*x as u16 - 1, *y as u16), Print('←'))
-                                        .unwrap();
+                            let mut arrow_x = *x as u16;
+                            let mut arrow_y = *y as u16;
+                            for pending_move in pending_commands.iter().filter_map(|c| match c {
+                                ClientCommand::MoveCommand(m) => Some(m),
+                                _ => None,
+                            }) {
+                                match pending_move {
+                                    MoveCommand { x: -1, y: 0 } => {
+                                        arrow_x = arrow_x - 1;
+                                        execute!(stdout, MoveTo(arrow_x, arrow_y), Print('←'))
+                                            .unwrap();
+                                    }
+                                    MoveCommand { x: 1, y: 0 } => {
+                                        arrow_x = arrow_x + 1;
+                                        execute!(stdout, MoveTo(arrow_x, arrow_y), Print('→'))
+                                            .unwrap();
+                                    }
+                                    MoveCommand { x: 0, y: 1 } => {
+                                        arrow_y = arrow_y + 1;
+                                        execute!(stdout, MoveTo(arrow_x, arrow_y), Print('↓'))
+                                            .unwrap();
+                                    }
+                                    MoveCommand { x: 0, y: -1 } => {
+                                        arrow_y = arrow_y - 1;
+                                        execute!(stdout, MoveTo(arrow_x, arrow_y), Print('↑'))
+                                            .unwrap();
+                                    }
+                                    _ => {}
                                 }
-                                Some(ClientCommand::MoveCommand(MoveCommand { x: 1, y: 0 })) => {
-                                    execute!(stdout, MoveTo(*x as u16 + 1, *y as u16), Print('→'))
-                                        .unwrap();
-                                }
-                                Some(ClientCommand::MoveCommand(MoveCommand { x: 0, y: 1 })) => {
-                                    execute!(stdout, MoveTo(*x as u16, *y as u16 + 1), Print('↓'))
-                                        .unwrap();
-                                }
-                                Some(ClientCommand::MoveCommand(MoveCommand { x: 0, y: -1 })) => {
-                                    execute!(stdout, MoveTo(*x as u16, *y as u16 - 1), Print('↑'))
-                                        .unwrap();
-                                }
-                                _ => {}
                             }
                         }
                     }

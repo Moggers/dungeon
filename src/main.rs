@@ -1,9 +1,7 @@
 use crate::{client::Client, simulator::Simulator};
 use clap::Parser;
-use crossterm::terminal::Clear;
 use models::rooms::Room;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite;
 use std::{str::FromStr, thread::JoinHandle};
 
 mod client;
