@@ -9,6 +9,8 @@ clap = { version = "4.5.4", features = ["derive"] }
 colored = "2.1.0"
 crossterm = "0.27.0"
 itertools = "0.12.1"
+num-derive = "0.4.2"
+num-traits = "0.2.19"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.24.0"
 rusqlite = { version = "0.31.0", features = ["rusqlite-macros", "blob"] }

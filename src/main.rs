@@ -1,6 +1,7 @@
 use crate::{client::Client, simulator::Simulator};
 use clap::Parser;
 use crossterm::terminal::Clear;
+use models::rooms::Room;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite;
 use std::{str::FromStr, thread::JoinHandle};
@@ -40,6 +41,7 @@ fn main() -> std::io::Result<()> {
         ));
         let pool = r2d2::Pool::new(manager).unwrap();
         migrations::apply_migrations(&pool);
+        Room::add_tavern(pool.get().unwrap());
 
         server_thread = Some(Gateway::start(
             args.game,

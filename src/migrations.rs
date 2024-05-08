@@ -79,11 +79,9 @@ pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
                 room_id,
                 x INTEGER,
                 y INTEGER,
-                passable INTEGER,
-                glyph TEXT
+                tile_type INTEGER 
             );
             ALTER TABLE positions ADD COLUMN room_id INTEGER REFERENCES rooms(room_id);
-            INSERT INTO rooms (room_name) VALUES ('Tavern');
             "#,
         )
         .down("DROP TABLE room_tiles; DROP TABLE rooms;"),

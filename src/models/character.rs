@@ -35,7 +35,7 @@ impl Character {
                 .unwrap();
             let new_character = trans.prepare(r#"INSERT INTO characters (entity_id, name) VALUES ($1, $2) RETURNING entity_id, name"#).unwrap().query_row((new_ent, name), Self::from_row).unwrap();
             trans
-                .prepare("INSERT INTO positions (entity_id, x, y, room_id) VALUES ($1, 0, 0, 1)")
+                .prepare("INSERT INTO positions (entity_id, x, y, room_id) VALUES ($1, 3, 3, 1)")
                 .unwrap()
                 .execute([new_ent])
                 .unwrap();

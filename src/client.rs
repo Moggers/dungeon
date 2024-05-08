@@ -1,4 +1,4 @@
-use colored::Colorize;
+use colored::{Color, Colorize};
 use crossterm::cursor::MoveTo;
 use crossterm::event::{poll, read, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -11,6 +11,7 @@ use itertools::Itertools;
 use rusqlite::types::Type;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::models::rooms::{Room, RoomTileType};
 use crate::netcode::client_commands::{ClientCommand, MoveCommand, TypedCommand};
 use crate::netcode::{identify::Identify, Packet};
 use std::hash::Hash;
@@ -47,6 +48,7 @@ impl Client {
             let mut current_room = String::new();
             let mut pending_move: Option<ClientCommand> = None;
             let mut current_entity_id = 0;
+            let mut tiles = std::collections::HashMap::<(i16, i16), RoomTileType>::new();
             execute!(stdout, Clear(ClearType::All)).unwrap();
             'app_loop: loop {
                 // Get inputs
@@ -205,6 +207,13 @@ impl Client {
                             Packet::IdentifyResp(idr) => current_entity_id = idr.entity_id,
                             Packet::CurrentRoom(cr) => {
                                 current_room = cr.name;
+                                tiles = cr.tiles.into_iter().fold(
+                                    std::collections::HashMap::new(),
+                                    |mut h, t| {
+                                        h.insert((t.x as i16, t.y as i16), t.tile_type);
+                                        h
+                                    },
+                                );
                             }
                             _ => {}
                         }
@@ -224,6 +233,79 @@ impl Client {
                     .unwrap();
                 }
                 if redraw_world {
+                    for ((x, y), tile) in &tiles {
+                        execute!(
+                            stdout,
+                            MoveTo(*x as u16, *y as u16),
+                            Print(match tile {
+                                RoomTileType::Floor => "+".truecolor(125, 125, 125),
+                                RoomTileType::Wall => {
+                                    match (
+                                        tiles
+                                            .get(&(*x, *y - 1))
+                                            .filter(|t| **t == RoomTileType::Wall), // North
+                                        tiles
+                                            .get(&(*x + 1, *y))
+                                            .filter(|t| **t == RoomTileType::Wall), // East
+                                        tiles
+                                            .get(&(*x, *y + 1))
+                                            .filter(|t| **t == RoomTileType::Wall), // South
+                                        tiles
+                                            .get(&(*x - 1, *y))
+                                            .filter(|t| **t == RoomTileType::Wall), // West
+                                    ) {
+                                        (Some(_), Some(_), Some(_), Some(_)) => {
+                                            "╬".truecolor(180, 100, 80)
+                                        }
+                                        (None, None, None, None) => "╬".truecolor(180, 100, 80),
+                                        (Some(_), Some(_), Some(_), None) => {
+                                            "╠".truecolor(180, 100, 80)
+                                        }
+                                        (Some(_), Some(_), None, Some(_)) => {
+                                            "╩".truecolor(180, 100, 80)
+                                        }
+                                        (Some(_), None, Some(_), Some(_)) => {
+                                            "╣".truecolor(180, 100, 80)
+                                        }
+                                        (None, Some(_), Some(_), Some(_)) => {
+                                            "╣".truecolor(180, 100, 80)
+                                        }
+                                        (Some(_), Some(_), None, None) => {
+                                            "╚".truecolor(180, 100, 80)
+                                        }
+                                        (None, Some(_), Some(_), None) => {
+                                            "╔".truecolor(180, 100, 80)
+                                        }
+                                        (None, None, Some(_), Some(_)) => {
+                                            "╗".truecolor(180, 100, 80)
+                                        }
+                                        (Some(_), None, None, Some(_)) => {
+                                            "╝".truecolor(180, 100, 80)
+                                        },
+                                        (Some(_), None, Some(_), None) => {
+                                            "║".truecolor(180, 100, 80)
+                                        },
+                                        (None, Some(_), None, Some(_)) => {
+                                            "═".truecolor(180, 100, 80)
+                                        },
+                                        (Some(_), None, None, None) => {
+                                            "╨".truecolor(180, 100, 80)
+                                        },
+                                        (None, Some(_), None, None) => {
+                                            "╘".truecolor(180, 100, 80)
+                                        },
+                                        (None, None, Some(_), None) => {
+                                            "╓".truecolor(180, 100, 80)
+                                        },
+                                        (None, None, None, Some(_)) => {
+                                            "╕".truecolor(180, 100, 80)
+                                        },
+                                    }
+                                }
+                            })
+                        )
+                        .unwrap();
+                    }
                     for (entity_id, (x, y)) in entity_positions.iter() {
                         if *x > -1 && *y > -1 {
                             execute!(
