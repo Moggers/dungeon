@@ -9,7 +9,14 @@ pub struct Room {
 }
 
 #[repr(i64)]
-#[derive(PartialEq, Debug, serde::Serialize, serde::Deserialize, num_derive::FromPrimitive, num_derive::ToPrimitive)]
+#[derive(
+    PartialEq,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    num_derive::FromPrimitive,
+    num_derive::ToPrimitive,
+)]
 pub enum RoomTileType {
     Floor,
     Wall,
@@ -39,7 +46,7 @@ impl Room {
         }
     }
 
-    pub fn add_tavern(db: PooledConnection<SqliteConnectionManager>) {
+    pub fn add_tavern(db: PooledConnection<SqliteConnectionManager>) -> Room {
         let room = db
             .query_row(
                 "INSERT INTO rooms (name) VALUES('Tavern') RETURNING *",
@@ -64,5 +71,34 @@ impl Room {
 ",
             db,
         );
+        return room;
+    }
+    pub fn add_map(db: PooledConnection<SqliteConnectionManager>) -> Room {
+        let room = db
+            .query_row(
+                "INSERT INTO rooms (name) VALUES('Map') RETURNING *",
+                [],
+                Room::from_row,
+            )
+            .unwrap();
+        Self::add_tiles(
+            room.room_id,
+            "\
+==================
+=++++++++++++++++=
+=++++++++++++++++=
+==================
+",
+            db,
+        );
+        return room;
+    }
+
+    pub fn add_exit(&self, x: i64, y: i64, db: PooledConnection<SqliteConnectionManager>) {
+        db.execute(
+            "INSERT INTO room_exits VALUES ($1, $2, $3)",
+            (self.room_id, x, y),
+        )
+        .unwrap();
     }
 }

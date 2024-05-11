@@ -9,7 +9,7 @@ pub struct Gateway {}
 
 impl Gateway {
     pub fn start(
-        game_name: String,
+        _game_name: String,
         socket_addr: SocketAddr,
         db: r2d2::Pool<SqliteConnectionManager>,
     ) -> JoinHandle<()> {
@@ -17,7 +17,7 @@ impl Gateway {
         let spawn = std::thread::spawn(move || {
             let listener = std::net::TcpListener::bind(socket_addr).unwrap();
             loop {
-                if let Ok((stream, socketaddr)) = listener.accept() {
+                if let Ok((stream, _socketaddr)) = listener.accept() {
                     Connection::handle(stream, db.clone());
                 }
             }

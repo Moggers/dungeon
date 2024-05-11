@@ -1,5 +1,3 @@
-use crate::client;
-
 pub mod client_commands;
 pub mod current_room;
 pub mod identify;
@@ -14,4 +12,6 @@ pub enum Packet {
     WorldState(world_state::WorldState),
     ClientCommands(client_commands::ClientCommands),
     CurrentRoom(current_room::CurrentRoom),
+    CurrentRooMReq(current_room::CurrentRoomReq)
+
 }

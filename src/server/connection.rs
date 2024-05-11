@@ -1,11 +1,12 @@
 use std::io::Write;
+use std::thread::current;
 use std::{net::TcpStream, thread::JoinHandle};
 
 use crate::models::character::Character;
-use crate::models::pending_commands::ClientCommand;
+use crate::models::commands::{ClientCommand, Command};
 use crate::netcode::current_room::CurrentRoom;
 use crate::netcode::identify::IdentifyResp;
-use crate::netcode::world_state::{self, WorldState};
+use crate::netcode::world_state::{self};
 use crate::netcode::Packet;
 
 pub struct Connection {}
@@ -32,13 +33,17 @@ impl Connection {
                             }),
                             &mut conn,
                         );
-                        Self::send(
-                            Packet::CurrentRoom(CurrentRoom::get_current_room(
-                                character.entity_id,
-                                &mut db,
-                            )),
-                            &mut conn,
-                        );
+                    }
+                    Packet::CurrentRooMReq(_) => {
+                        let mut db = pool.get().unwrap();
+                        if let Some(entity_id) = client_entity_id {
+                            Self::send(
+                                Packet::CurrentRoom(CurrentRoom::get_current_room(
+                                    entity_id, &mut db,
+                                )),
+                                &mut conn,
+                            );
+                        }
                     }
                     Packet::Heartbeat(heartbeat) => {
                         let mut db = pool.get().unwrap();
@@ -55,11 +60,13 @@ impl Connection {
                         }
                     }
                     Packet::ClientCommands(commands) => {
-                        let db = pool.get().unwrap();
                         if let Some(entity_id) = client_entity_id {
                             let mut queued_commands = vec![];
+                            let mut db = pool.get().unwrap();
+                            let mut trans = db.transaction().unwrap();
                             for c in commands.commands.into_iter() {
-                                db.prepare("INSERT INTO actions_created VALUES ($1, $2, $3)")
+                                trans
+                                    .prepare("INSERT INTO actions_created VALUES ($1, $2, $3)")
                                     .unwrap()
                                     .execute((
                                         c.entity_id,
@@ -68,23 +75,16 @@ impl Connection {
                                     ))
                                     .unwrap();
                                 match c.command {
-                                    ClientCommand::TypedCommand(com)
-                                        if com
-                                            .command
-                                            .split_once(" ")
-                                            .iter()
-                                            .find(|(com, _)| com == &"say")
-                                            .is_some() =>
-                                    {
-                                        let (_, message) = com.command.split_once(" ").unwrap();
-                                        db.prepare("INSERT INTO messages (source_entity_id, message) VALUES ($1, $2)").unwrap().execute((entity_id, message)).unwrap();
-                                        db.prepare("INSERT INTO actions_removed (entity_id, action_removed_id, action_id) SELECT $1, COALESCE(MAX(action_removed_id)+1, 1), $2 FROM actions_removed ar WHERE ar.entity_id=$1").unwrap().execute((entity_id, c.action_id)).unwrap();
+                                    ClientCommand::SayCommand(com) => {
+                                        com.apply_commmand(entity_id, &mut trans);
+                                        trans.prepare("INSERT INTO actions_removed (entity_id, action_removed_id, action_id) SELECT $1, COALESCE(MAX(action_removed_id)+1, 1), $2 FROM actions_removed ar WHERE ar.entity_id=$1").unwrap().execute((entity_id, c.action_id)).unwrap();
                                     }
                                     c => {
                                         queued_commands.push(c);
                                     }
                                 }
                             }
+                            trans.commit().unwrap();
                         }
                     }
                     _ => {

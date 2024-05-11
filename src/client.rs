@@ -9,11 +9,13 @@ use crossterm::terminal::{
 };
 use itertools::Itertools;
 
-use crate::models::pending_commands::{Action, ClientCommand, MoveCommand, TypedCommand};
+use crate::models::commands::{Action, ClientCommand, MoveCommand};
 use crate::models::rooms::RoomTileType;
 use crate::netcode::client_commands::ClientCommands;
+use crate::netcode::current_room::CurrentRoomReq;
 use crate::netcode::heartbeat::Heartbeat;
 use crate::netcode::{identify::Identify, Packet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::{net::SocketAddr, thread::JoinHandle};
 
@@ -42,6 +44,7 @@ impl Client {
             let mut last_heartbeat = std::time::SystemTime::now();
             let mut redraw_world = false;
             let mut last_message_id = 0;
+            let mut current_room_id: Option<i64> = None;
             let mut current_room = String::new();
             let mut send_commands = false;
             let mut pending_commands: Vec<Action> = vec![];
@@ -49,7 +52,7 @@ impl Client {
             let mut highest_local_action: i64 = 0;
             let mut last_received_action_created_id: i64 = 0;
             let mut current_entity_id = 0;
-            let mut tiles = std::collections::HashMap::<(i16, i16), (RoomTileType, bool)>::new();
+            let mut tiles: Option<HashMap<(i16, i16), RoomTileType>> = None;
             execute!(stdout, Clear(ClearType::All)).unwrap();
             'app_loop: loop {
                 // Get inputs
@@ -90,9 +93,7 @@ impl Client {
                             pending_commands.push(Action {
                                 entity_id: current_entity_id,
                                 action_id: highest_local_action,
-                                command: ClientCommand::TypedCommand(TypedCommand {
-                                    command: current_command.clone(),
-                                }),
+                                command: ClientCommand::try_from(current_command.as_str()).unwrap(),
                             });
                             entering_command = false;
                             send_commands = true;
@@ -184,6 +185,10 @@ impl Client {
                         _ => {}
                     }
                 }
+                if current_room_id.is_none() {
+                    let packet = Packet::CurrentRooMReq(CurrentRoomReq {});
+                    stream.write(&bincode::serialize(&packet).unwrap()).unwrap();
+                }
                 if send_commands == true {
                     let packet = Packet::ClientCommands(ClientCommands {
                         commands: pending_commands
@@ -218,6 +223,11 @@ impl Client {
                                 for (entity_id, position) in
                                     world_state.entity_positions.into_iter()
                                 {
+                                    if entity_id == current_entity_id {
+                                        if current_room_id != Some(position.0) {
+                                            current_room_id = None;
+                                        }
+                                    }
                                     entity_positions.insert(entity_id, position);
                                 }
                                 if world_state.messages.len() > 0 {
@@ -227,28 +237,32 @@ impl Client {
                                     last_message_id = world_state.last_message_id;
                                     redraw_messages = true;
                                 }
-                                last_received_action_created_id = world_state.highest_action_created_id;
-                                last_received_action_removed_id = world_state.highest_action_removed_id;
+                                last_received_action_created_id =
+                                    world_state.highest_action_created_id;
+                                last_received_action_removed_id =
+                                    world_state.highest_action_removed_id;
                                 if last_received_action_created_id > highest_local_action {
                                     highest_local_action = last_received_action_created_id;
                                 }
                                 pending_commands.retain(|a| {
-                                    !world_state.actions_removed.iter().map(|r| r.action_id).contains(&a.action_id)
+                                    !world_state
+                                        .actions_removed
+                                        .iter()
+                                        .map(|r| r.action_id)
+                                        .contains(&a.action_id)
                                 })
                             }
                             Packet::IdentifyResp(idr) => current_entity_id = idr.entity_id,
                             Packet::CurrentRoom(cr) => {
+                                current_room_id = Some(cr.room_id);
                                 current_room = cr.name;
-                                tiles = cr.tiles.into_iter().fold(
+                                tiles = Some(cr.tiles.into_iter().fold(
                                     std::collections::HashMap::new(),
                                     |mut h, t| {
-                                        h.insert(
-                                            (t.x as i16, t.y as i16),
-                                            (t.tile_type, t.passable),
-                                        );
+                                        h.insert((t.x as i16, t.y as i16), t.tile_type);
                                         h
                                     },
-                                );
+                                ));
                             }
                             _ => {}
                         }
@@ -268,72 +282,82 @@ impl Client {
                     .unwrap();
                 }
                 if redraw_world {
-                    for ((x, y), tile) in &tiles {
-                        execute!(
-                            stdout,
-                            MoveTo(*x as u16, *y as u16),
-                            Print(match tile.0 {
-                                RoomTileType::Floor => "+".truecolor(125, 125, 125),
-                                RoomTileType::Wall => {
-                                    match (
-                                        tiles
-                                            .get(&(*x, *y - 1))
-                                            .filter(|t| t.0 == RoomTileType::Wall), // North
-                                        tiles
-                                            .get(&(*x + 1, *y))
-                                            .filter(|t| t.0 == RoomTileType::Wall), // East
-                                        tiles
-                                            .get(&(*x, *y + 1))
-                                            .filter(|t| t.0 == RoomTileType::Wall), // South
-                                        tiles
-                                            .get(&(*x - 1, *y))
-                                            .filter(|t| t.0 == RoomTileType::Wall), // West
-                                    ) {
-                                        (Some(_), Some(_), Some(_), Some(_)) => {
-                                            "╬".truecolor(180, 100, 80)
+                    if let Some(tiles) = tiles.as_ref() {
+                        for ((x, y), tile) in tiles {
+                            execute!(
+                                stdout,
+                                MoveTo(*x as u16, *y as u16),
+                                Print(match tile {
+                                    RoomTileType::Floor => "+".truecolor(125, 125, 125),
+                                    RoomTileType::Wall => {
+                                        match (
+                                            tiles
+                                                .get(&(*x, *y - 1))
+                                                .filter(|t| **t == RoomTileType::Wall), // North
+                                            tiles
+                                                .get(&(*x + 1, *y))
+                                                .filter(|t| **t == RoomTileType::Wall), // East
+                                            tiles
+                                                .get(&(*x, *y + 1))
+                                                .filter(|t| **t == RoomTileType::Wall), // South
+                                            tiles
+                                                .get(&(*x - 1, *y))
+                                                .filter(|t| **t == RoomTileType::Wall), // West
+                                        ) {
+                                            (Some(_), Some(_), Some(_), Some(_)) => {
+                                                "╬".truecolor(180, 100, 80)
+                                            }
+                                            (None, None, None, None) => "╬".truecolor(180, 100, 80),
+                                            (Some(_), Some(_), Some(_), None) => {
+                                                "╠".truecolor(180, 100, 80)
+                                            }
+                                            (Some(_), Some(_), None, Some(_)) => {
+                                                "╩".truecolor(180, 100, 80)
+                                            }
+                                            (Some(_), None, Some(_), Some(_)) => {
+                                                "╣".truecolor(180, 100, 80)
+                                            }
+                                            (None, Some(_), Some(_), Some(_)) => {
+                                                "╣".truecolor(180, 100, 80)
+                                            }
+                                            (Some(_), Some(_), None, None) => {
+                                                "╚".truecolor(180, 100, 80)
+                                            }
+                                            (None, Some(_), Some(_), None) => {
+                                                "╔".truecolor(180, 100, 80)
+                                            }
+                                            (None, None, Some(_), Some(_)) => {
+                                                "╗".truecolor(180, 100, 80)
+                                            }
+                                            (Some(_), None, None, Some(_)) => {
+                                                "╝".truecolor(180, 100, 80)
+                                            }
+                                            (Some(_), None, Some(_), None) => {
+                                                "║".truecolor(180, 100, 80)
+                                            }
+                                            (None, Some(_), None, Some(_)) => {
+                                                "═".truecolor(180, 100, 80)
+                                            }
+                                            (Some(_), None, None, None) => {
+                                                "╨".truecolor(180, 100, 80)
+                                            }
+                                            (None, Some(_), None, None) => {
+                                                "╘".truecolor(180, 100, 80)
+                                            }
+                                            (None, None, Some(_), None) => {
+                                                "╓".truecolor(180, 100, 80)
+                                            }
+                                            (None, None, None, Some(_)) => {
+                                                "╕".truecolor(180, 100, 80)
+                                            }
                                         }
-                                        (None, None, None, None) => "╬".truecolor(180, 100, 80),
-                                        (Some(_), Some(_), Some(_), None) => {
-                                            "╠".truecolor(180, 100, 80)
-                                        }
-                                        (Some(_), Some(_), None, Some(_)) => {
-                                            "╩".truecolor(180, 100, 80)
-                                        }
-                                        (Some(_), None, Some(_), Some(_)) => {
-                                            "╣".truecolor(180, 100, 80)
-                                        }
-                                        (None, Some(_), Some(_), Some(_)) => {
-                                            "╣".truecolor(180, 100, 80)
-                                        }
-                                        (Some(_), Some(_), None, None) => {
-                                            "╚".truecolor(180, 100, 80)
-                                        }
-                                        (None, Some(_), Some(_), None) => {
-                                            "╔".truecolor(180, 100, 80)
-                                        }
-                                        (None, None, Some(_), Some(_)) => {
-                                            "╗".truecolor(180, 100, 80)
-                                        }
-                                        (Some(_), None, None, Some(_)) => {
-                                            "╝".truecolor(180, 100, 80)
-                                        }
-                                        (Some(_), None, Some(_), None) => {
-                                            "║".truecolor(180, 100, 80)
-                                        }
-                                        (None, Some(_), None, Some(_)) => {
-                                            "═".truecolor(180, 100, 80)
-                                        }
-                                        (Some(_), None, None, None) => "╨".truecolor(180, 100, 80),
-                                        (None, Some(_), None, None) => "╘".truecolor(180, 100, 80),
-                                        (None, None, Some(_), None) => "╓".truecolor(180, 100, 80),
-                                        (None, None, None, Some(_)) => "╕".truecolor(180, 100, 80),
                                     }
-                                }
-                            })
-                        )
-                        .unwrap();
+                                })
+                            )
+                            .unwrap();
+                        }
                     }
-                    for (entity_id, (x, y)) in entity_positions.iter() {
+                    for (entity_id, (_room_id, x, y)) in entity_positions.iter() {
                         if *x > -1 && *y > -1 {
                             execute!(
                                 stdout,
@@ -349,10 +373,12 @@ impl Client {
                         if *entity_id == current_entity_id {
                             let mut arrow_x = *x as u16;
                             let mut arrow_y = *y as u16;
-                            for pending_move in pending_commands.iter().filter_map(|c| match &c.command {
-                                ClientCommand::MoveCommand(m) => Some(m),
-                                _ => None,
-                            }) {
+                            for pending_move in
+                                pending_commands.iter().filter_map(|c| match &c.command {
+                                    ClientCommand::MoveCommand(m) => Some(m),
+                                    _ => None,
+                                })
+                            {
                                 match pending_move {
                                     MoveCommand { x: -1, y: 0 } => {
                                         arrow_x = arrow_x - 1;

@@ -1,6 +1,6 @@
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{prepare_and_bind, prepare_cached_and_bind, OptionalExtension, Row};
+use rusqlite::{OptionalExtension, Row};
 
 #[derive(Debug)]
 pub struct Character {

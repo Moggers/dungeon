@@ -39,7 +39,9 @@ fn main() -> std::io::Result<()> {
         ));
         let pool = r2d2::Pool::new(manager).unwrap();
         migrations::apply_migrations(&pool);
-        Room::add_tavern(pool.get().unwrap());
+        let tavern = Room::add_tavern(pool.get().unwrap());
+        tavern.add_exit(9, 8, pool.get().unwrap());
+        Room::add_map(pool.get().unwrap());
 
         server_thread = Some(Gateway::start(
             args.game,

@@ -75,11 +75,18 @@ pub fn apply_migrations(pool: &r2d2::Pool<SqliteConnectionManager>) {
                 current_tick INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO epoch VALUES (0);
+            CREATE TABLE room_exits (
+                room_id INTEGER NOT NULL REFERENCES rooms(room_id),
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL
+            );
             "#,
     )
     .down(
         r#" 
-            DROP TABLE room_tiles; DROP TABLE rooms;
+            DROP TABLE room_tiles; 
+            DROP TABLE room_exits;
+            DROP TABLE rooms;
             DROP TABLE pending_commands; 
             DROP TABLE epoch;
             DROP TABLE positions;

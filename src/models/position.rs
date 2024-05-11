@@ -5,6 +5,7 @@ pub struct Position {
     pub x: i64,
     pub y: i64,
     pub last_updated: i64,
+    pub room_id: i64,
 }
 
 impl Position {
@@ -14,6 +15,7 @@ impl Position {
             x: r.get(1)?,
             y: r.get(2)?,
             last_updated: r.get(3)?,
+            room_id:r.get(4)?
         });
     }
 }

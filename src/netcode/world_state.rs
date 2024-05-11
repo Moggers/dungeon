@@ -1,14 +1,9 @@
-use crate::models::{
-    pending_commands::{Action, ActionRemoved},
-    position::Position,
-};
-use itertools::{max, Itertools};
+use crate::models::{commands::{Action, ActionRemoved}, position::Position};
+use itertools::Itertools;
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{OptionalExtension, Row};
+use rusqlite::Row;
 use std::collections::HashMap;
-
-use super::client_commands::ClientCommands;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Message {
@@ -30,7 +25,7 @@ impl Message {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorldState {
     pub timestamp: i64,
-    pub entity_positions: HashMap<i64, (i64, i64)>,
+    pub entity_positions: HashMap<i64, (i64, i64, i64)>,
     pub last_message_id: i64,
     pub messages: Vec<Message>,
     pub actions_created: Vec<Action>,
@@ -73,7 +68,7 @@ impl WorldState {
             entity_positions: positions
                 .into_iter()
                 .fold(HashMap::new(), |mut carry, cur| {
-                    carry.insert(cur.entity_id, (cur.x, cur.y));
+                    carry.insert(cur.entity_id, (cur.room_id, cur.x, cur.y));
                     carry
                 }),
             last_message_id: messages.iter().last().map(|m| m.message_id).unwrap_or(0),

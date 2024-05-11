@@ -25,6 +25,10 @@ impl RoomTile {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CurrentRoomReq {
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CurrentRoom {
     pub room_id: i64,
     pub name: String,

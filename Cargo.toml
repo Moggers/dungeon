@@ -16,5 +16,6 @@ r2d2_sqlite = "0.24.0"
 rusqlite = { version = "0.31.0", features = ["rusqlite-macros", "blob"] }
 rusqlite_migration = "1.2.0"
 serde = { version = "1.0.200", features = ["serde_derive"] }
+strum = { version = "0.26.2", features = ["derive"] }
 time = { version = "0.3.36", features = ["serde"] }
 unicode-segmentation = "1.11.0"
